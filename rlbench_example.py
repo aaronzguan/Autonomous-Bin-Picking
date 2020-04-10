@@ -29,7 +29,7 @@ def sample_normal_pose(pos_scale, rot_scale):
     return pos, quat_wxyz
 
 
-def add_noise(pose):
+def noisy_object(pose):
     _pos_scale = [0.005] * 3
     _rot_scale = [0.01] * 3
     pos, quat_wxyz = sample_normal_pose(_pos_scale, _rot_scale)
@@ -76,7 +76,7 @@ class GraspController:
             name = obj.get_name()
             pose = obj.get_pose()
             if add_noise:
-                pose = add_noise(pose)
+                pose = noisy_object(pose)
             objs_dict[name] = [obj, pose]
 
         return objs_dict
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     for object in objects:
         # Getting object poses, noisy or not
         # TODO detect the pose using vision and handle the noisy pose
-        objs = grasp_controller.get_objects(add_noise=False)
+        objs = grasp_controller.get_objects(add_noise=True)
         pose = objs[object][1]
         # Getting the path of reaching the target position
         path = grasp_controller.get_path(pose)
