@@ -91,14 +91,18 @@ class GraspController:
 
     def grasp(self, obj):
         # TODO get feedback to check if grasp is successfull
-        done = False
-        while not done:
-            done = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
-            self.env._pyrep.step()
-            self.task._task.step()
-            self.env._scene.step()
-        done = self.env._robot.gripper.grasp(obj)
-        return done
+        done_grab_action = False
+        succ_grabbed = False
+        while not succ_grabbed:
+            # Repeat unitil successfully grab the object
+            while not done_grab_action:
+                # gradually close the gripper
+                done_grab_action = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
+                self.env._pyrep.step()
+                self.task._task.step()
+                self.env._scene.step()
+            succ_grabbed = self.env._robot.gripper.grasp(obj)
+        return succ_grabbed
 
     def release(self):
         done = False
@@ -150,6 +154,7 @@ if __name__ == "__main__":
         # grasp the object
         grabbed = grasp_controller.grasp(objs[object][0])
         print('The object is grabbed?', grabbed)
+
         # TODO get feedback to check if grasp is successfull
 
         # move to home position
