@@ -92,16 +92,14 @@ class GraspController:
     def grasp(self, obj):
         # TODO get feedback to check if grasp is successfull
         done_grab_action = False
-        succ_grabbed = False
-        while not succ_grabbed:
-            # Repeat unitil successfully grab the object
-            while not done_grab_action:
-                # gradually close the gripper
-                done_grab_action = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
-                self.env._pyrep.step()
-                self.task._task.step()
-                self.env._scene.step()
-            succ_grabbed = self.env._robot.gripper.grasp(obj)
+        # Repeat unitil successfully grab the object
+        while not done_grab_action:
+            # gradually close the gripper
+            done_grab_action = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
+            self.env._pyrep.step()
+            self.task._task.step()
+            self.env._scene.step()
+        succ_grabbed = self.env._robot.gripper.grasp(obj)
         return succ_grabbed
 
     def release(self):
@@ -142,18 +140,26 @@ if __name__ == "__main__":
     objects = ['Shape', 'Shape1', 'Shape3']
 
     for object in objects:
-        # Getting object poses, noisy or not
+        
         # TODO detect the pose using vision and handle the noisy pose
-        objs = grasp_controller.get_objects(add_noise=True)
-        pose = objs[object][1]
-        # Getting the path of reaching the target position
-        path = grasp_controller.get_path(pose)
-        # Execute the path
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
 
-        # grasp the object
-        grabbed = grasp_controller.grasp(objs[object][0])
-        print('The object is grabbed?', grabbed)
+        grabbed = False
+        while not grabbed:
+            # In case gripper fail to grab, it should release the air and try again
+            grasp_controller.release()
+
+            # Getting object poses, noisy or not
+            objs = grasp_controller.get_objects(add_noise=True)
+            pose = objs[object][1]
+
+            # Getting the path of reaching the target position
+            path = grasp_controller.get_path(pose)
+            # Execute the path
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+            
+            # grasp the object
+            grabbed = grasp_controller.grasp(objs[object][0])
+            print('The object is grabbed?', grabbed)
 
         # TODO get feedback to check if grasp is successfull
 
