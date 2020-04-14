@@ -8,7 +8,8 @@ from rlbench.observation_config import ObservationConfig
 from rlbench.tasks import *
 
 from pyrep.const import ConfigurationPathAlgorithms as Algos
-
+from pose_estimator import estimate_pose
+import torch
 
 def skew(x):
     return np.array([[0, -x[2], x[1]],
@@ -89,16 +90,18 @@ class GraspController:
                                             ignore_collisions=True, algorithm=Algos.RRTConnect, trials=1000)
         return path
 
-    def grasp(self, obj):
+    def grasp(self):
         # TODO get feedback to check if grasp is successfull
+        grasp_status = []
         done = False
         while not done:
             done = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
             self.env._pyrep.step()
             self.task._task.step()
             self.env._scene.step()
-        done = self.env._robot.gripper.grasp(obj)
-        return done
+        for g_obj in self.task._task.get_graspable_objects():
+            grasp_status.append(self.env._robot.gripper.grasp(g_obj))
+        return grasp_status
 
     def release(self):
         done = False
@@ -132,51 +135,64 @@ if __name__ == "__main__":
     action_mode = ActionMode(ArmActionMode.ABS_JOINT_POSITION)
     # Create grasp controller with initialized environment and task
     grasp_controller = GraspController(action_mode)
-    # Reset task
-    descriptions, obs = grasp_controller.reset()
-
     objects = ['Shape', 'Shape1', 'Shape3']
+    while True:
+        # Reset task
+        descriptions, obs = grasp_controller.reset()
 
-    for object in objects:
-        # Getting object poses, noisy or not
-        # TODO detect the pose using vision and handle the noisy pose
         objs = grasp_controller.get_objects(add_noise=True)
-        pose = objs[object][1]
-        # Getting the path of reaching the target position
-        path = grasp_controller.get_path(pose)
-        # Execute the path
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+        print(objs['Shape'][1][:3], objs['Shape1'][1][:3], objs['Shape3'][1][:3])
 
-        # grasp the object
-        grabbed = grasp_controller.grasp(objs[object][0])
-        print('The object is grabbed?', grabbed)
-        # TODO get feedback to check if grasp is successfull
-
-        # move to home position
-        pose = objs['waypoint0'][1]
-        path = grasp_controller.get_path(pose, pad=0)
+        gripper_pose = np.copy(obs.gripper_pose)
+        gripper_pose[0] -= 0.05
+        path = grasp_controller.get_path(gripper_pose, pad=0.15)
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
 
-        # move above small container
-        pose = objs['waypoint3'][1]
-        path = grasp_controller.get_path(pose, pad=0)
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
+        rgb = obs.wrist_rgb
+        obj_poses = estimate_pose(model_path='best_model_23.pth', image=rgb)
+        print(obj_poses)
+        # for object in objects:
+        for i in range(len(objects)):
+            # Getting object poses, noisy or not
+            # TODO detect the pose using vision and handle the noisy pose
+            # pose = objs[object][1]
+            pose = obj_poses[3*i:3 + 3*i]
+            print(pose)
+            # Getting the path of reaching the target position
+            path = grasp_controller.get_path(pose)
+            # Execute the path
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
 
-        # release the object
-        grasp_controller.release()
+            # grasp the object
+            grasp_status = grasp_controller.grasp()
+            print('The object is grabbed?', grasp_status)
+            # TODO get feedback to check if grasp is successfull
 
-        # go back to home position
-        pose = objs['waypoint0'][1]
-        path = grasp_controller.get_path(pose, pad=0)
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+            # move to home position
+            pose = objs['waypoint0'][1]
+            path = grasp_controller.get_path(pose, pad=0)
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
 
-        # TODO check if any object is left in the large container and grasp again (using vision)
+            # move above small container
+            pose = objs['waypoint3'][1]
+            path = grasp_controller.get_path(pose, pad=0)
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
 
-        #### Getting various fields from obs ####
-        # current_joints = obs.joint_positions
-        # gripper_pose = obs.gripper_pose
-        # rgb = obs.wrist_rgb
-        # depth = obs.wrist_depth
-        # mask = obs.wrist_mask
+            # release the object
+            grasp_controller.release()
 
-    # TODO reset the task
+            # go back to home position
+            pose = objs['waypoint0'][1]
+            path = grasp_controller.get_path(pose, pad=0)
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+
+            # TODO check if any object is left in the large container and grasp again (using vision)
+
+            #### Getting various fields from obs ####
+            # current_joints = obs.joint_positions
+            # gripper_pose = obs.gripper_pose
+            # rgb = obs.wrist_rgb
+            # depth = obs.wrist_depth
+            # mask = obs.wrist_mask
+
+        # TODO reset the task
