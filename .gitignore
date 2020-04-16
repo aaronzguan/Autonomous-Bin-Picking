@@ -5,3 +5,5 @@ models/GQCNN-2.1/
 models/GQCNN-3.0/
 models/GQCNN-4.0-PJ/
 models/GQCNN-4.0-SUCTION/
+gqcnn/
+perception/
