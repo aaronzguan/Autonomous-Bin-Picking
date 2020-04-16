@@ -4,16 +4,17 @@ from quaternion import from_rotation_matrix, quaternion
 
 from rlbench.environment import Environment
 from rlbench.action_modes import ArmActionMode, ActionMode
-from rlbench.observation_config import ObservationConfig
+from rlbench.observation_config import ObservationConfig, CameraConfig
 from rlbench.tasks import *
 
 from pyrep.const import ConfigurationPathAlgorithms as Algos
-
+from grasp_planner import GraspPlanner
+from perception import CameraIntrinsics
 
 def skew(x):
     return np.array([[0, -x[2], x[1]],
-                    [x[2], 0, -x[0]],
-                    [-x[1], x[0], 0]])
+                     [x[2], 0, -x[0]],
+                     [-x[1], x[0], 0]])
 
 
 def sample_normal_pose(pos_scale, rot_scale):
@@ -40,26 +41,12 @@ def noisy_object(pose):
     return pose
 
 
-class RandomAgent:
-
-    # def act(self, obs):
-    #     delta_pos = [(np.random.rand() * 2 - 1) * 0.005, 0, 0]
-    #     delta_quat = [0, 0, 0, 1] # xyzw
-    #     gripper_pos = [np.random.rand() > 0.5] # action should contain 1 extra value for gripper open close state
-    #     return delta_pos + delta_quat + gripper_pos
-
-    def act(self, obs):
-        gripper_pos = obs.gripper_pose.tolist()
-        gripper_pos[0] -= 0.005
-        # gripper_ori = [0, 1, 0, 0]
-        gripper_status = [1]
-        return gripper_pos + gripper_status
-
-
 class GraspController:
-    def __init__(self, action_mode):
+    def __init__(self, action_mode, static_positions=True):
         # Initialize environment with Action mode and observations
-        self.env = Environment(action_mode, '', ObservationConfig(), False)
+        # Resize the write camera to fit the GQCNN
+        wrist_camera = CameraConfig(image_size=(1032, 772))
+        self.env = Environment(action_mode, '', ObservationConfig(wrist_camera=wrist_camera), False, static_positions=static_positions)
         self.env.launch()
         # Load specified task into the environment
         self.task = self.env.get_task(EmptyContainer)
@@ -81,24 +68,27 @@ class GraspController:
 
         return objs_dict
 
-    def get_path(self, pose, pad=0.01):
+    def get_path(self, pose, set_orientation=False):
         # TODO deal with situations when path not found
-        target_pose = np.copy(pose)
-        target_pose[2] -= pad
-        path = self.env._robot.arm.get_path(target_pose[:3], quaternion=np.array([0, 1, 0, 0]),
-                                            ignore_collisions=True, algorithm=Algos.RRTConnect, trials=1000)
+        if set_orientation:
+            path = self.env._robot.arm.get_path(pose[:3], quaternion=pose[3:],
+                                                ignore_collisions=True, algorithm=Algos.RRTConnect, trials=1000)
+        else:
+            path = self.env._robot.arm.get_path(pose[:3], quaternion=np.array([0, 1, 0, 0]),
+                                                ignore_collisions=True, algorithm=Algos.RRTConnect, trials=1000)
         return path
 
-    def grasp(self, obj):
+    def grasp(self):
         # TODO get feedback to check if grasp is successfull
-        done = False
-        while not done:
-            done = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
+        done_grab_action = False
+        # Repeat unitil successfully grab the object
+        while not done_grab_action:
+            # gradually close the gripper
+            done_grab_action = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
             self.env._pyrep.step()
             self.task._task.step()
             self.env._scene.step()
-        done = self.env._robot.gripper.grasp(obj)
-        return done
+        return self.env._robot.gripper.get_grasped_objects()
 
     def release(self):
         done = False
@@ -127,56 +117,58 @@ class GraspController:
 
 
 if __name__ == "__main__":
-
+    # Get grasp planner using GQCNN
+    grasp_planner = GraspPlanner(model="GQCNN-4.0-PJ")
     # Set Action Mode, See rlbench/action_modes.py for other action modes
     action_mode = ActionMode(ArmActionMode.ABS_JOINT_POSITION)
     # Create grasp controller with initialized environment and task
-    grasp_controller = GraspController(action_mode)
+    grasp_controller = GraspController(action_mode, static_positions=True)
     # Reset task
     descriptions, obs = grasp_controller.reset()
 
-    objects = ['Shape', 'Shape1', 'Shape3']
-
-    for object in objects:
+    camera_intr = CameraIntrinsics(fx=893.738, fy=893.738, cx=516, cy=386, frame='world', height=772, width=1032)
+    camera_to_gripper_translation = [0.03, 0, 0.1]
+    # TODO: Change the whole logic into detecting the object using GQCNN
+    while True:
+        objs = grasp_controller.get_objects(add_noise=True)
+        # go back to home position
+        home_pose = objs['waypoint0'][1]
+        path = grasp_controller.get_path(home_pose)
+        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
         # Getting object poses, noisy or not
         # TODO detect the pose using vision and handle the noisy pose
-        objs = grasp_controller.get_objects(add_noise=True)
-        pose = objs[object][1]
+
+        # Take depth picture and use GQCNN to predict grasping pose
+        depth = obs.wrist_depth*10
+        # Get the grasping pose relative to the current camera position (home position)
+        graspping_pose = grasp_planner.plan_grasp(depth, camera_intr=camera_intr)
+        # Convert the relative grasping position to global grasping position
+        graspping_pose[:3] += home_pose[:3]
+        # Add extra distance between camera and gripper
+        graspping_pose[:3] += camera_to_gripper_translation
+        print(graspping_pose)
         # Getting the path of reaching the target position
-        path = grasp_controller.get_path(pose)
+        path = grasp_controller.get_path(graspping_pose, set_orientation=True)
         # Execute the path
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
 
-        # grasp the object
-        grabbed = grasp_controller.grasp(objs[object][0])
-        print('The object is grabbed?', grabbed)
+        # grasp the object and return a list of grasped objects
+        grasped_objects = grasp_controller.grasp()
         # TODO get feedback to check if grasp is successfull
 
         # move to home position
         pose = objs['waypoint0'][1]
-        path = grasp_controller.get_path(pose, pad=0)
+        path = grasp_controller.get_path(pose)
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
 
         # move above small container
         pose = objs['waypoint3'][1]
-        path = grasp_controller.get_path(pose, pad=0)
+        path = grasp_controller.get_path(pose)
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
 
         # release the object
         grasp_controller.release()
 
-        # go back to home position
-        pose = objs['waypoint0'][1]
-        path = grasp_controller.get_path(pose, pad=0)
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
-
-        # TODO check if any object is left in the large container and grasp again (using vision)
-
-        #### Getting various fields from obs ####
-        # current_joints = obs.joint_positions
-        # gripper_pose = obs.gripper_pose
-        # rgb = obs.wrist_rgb
-        # depth = obs.wrist_depth
-        # mask = obs.wrist_mask
+        # TODO check if large container is empty and finish the forward task(using vision)
 
     # TODO reset the task
