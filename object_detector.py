@@ -52,16 +52,19 @@ class object_detector_cnn(nn.Module):
         return output
 
 
-def check_container_empty(model_path, image):
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    model = object_detector_cnn()
-    model.load_state_dict(torch.load(model_path))
-    model.to(device)
-    model.eval()
-    output = model(ToTensor()(image).unsqueeze(0))
-    _, label_pred = torch.max(output, 1)
-    label_pred = label_pred.detach().numpy()[0]
-    return not label_pred
+class large_container_detector():
+    def __init__(self, model):
+        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.model = object_detector_cnn()
+        self.model.load_state_dict(torch.load(model))
+        self.model.to(device)
+        self.model.eval()
+
+    def check_empty(self, image):
+        output = self.model(ToTensor()(image).unsqueeze(0))
+        _, label_pred = torch.max(output, 1)
+        label_pred = label_pred.detach().numpy()[0]
+        return not label_pred
 
 
 if __name__ == '__main__':

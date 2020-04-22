@@ -11,7 +11,7 @@ from pyrep.const import ConfigurationPathAlgorithms as Algos
 from grasp_planner import GraspPlanner
 from perception import CameraIntrinsics
 
-from object_detector import check_container_empty
+from object_detector import large_container_detector
 import cv2
 import matplotlib.pyplot as plt
 import time
@@ -133,6 +133,8 @@ class GraspController:
 if __name__ == "__main__":
     # Get grasp planner using GQCNN
     grasp_planner = GraspPlanner(model="GQCNN-2.0")
+    # Get large container empty detector
+    large_container_detector = large_container_detector(model='large_container_detector_model.pth')
     # Set Action Mode, See rlbench/action_modes.py for other action modes
     action_mode = ActionMode(ArmActionMode.ABS_JOINT_POSITION)
     # Create grasp controller with initialized environment and task
@@ -152,16 +154,15 @@ if __name__ == "__main__":
         home_pose[0] -= 0.022
         path = grasp_controller.get_path(home_pose)
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
-        # Getting object poses, noisy or not
-        # TODO detect the pose using vision and handle the noisy pose
-        # Scale the image and change the type to fit the neural network
+
+        # Scale the image and change the type to uint8 to fit the neural network
         rgb = np.array(obs.wrist_rgb * 255, dtype='uint8')
         # Change the image to BGR to fit the neural network
         # p.s. The network is trained on BGR images
         wrist_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         # Use network with trained model to check if the large container is empty or not
         detector_start = time.time()
-        container_is_empty = check_container_empty(model_path='large_container_detector_model.pth', image=wrist_image)
+        container_is_empty = large_container_detector.check_empty(image=wrist_image)
         plt.figure(figsize=(8, 8))
         plt.imshow(cv2.cvtColor(wrist_image, cv2.COLOR_BGR2RGB))
         if container_is_empty:
@@ -194,7 +195,6 @@ if __name__ == "__main__":
         # grasp the object and return a list of grasped objects
         grasped_objects = grasp_controller.grasp()
         print('Object graspping status:', grasped_objects)
-        # TODO get feedback to check if grasp is successfull
 
         # move to home position
         pose = objs['waypoint0'][1]
@@ -208,7 +208,5 @@ if __name__ == "__main__":
 
         # release the object
         grasp_controller.release()
-
-        # TODO check if large container is empty and finish the forward task(using vision)
 
     # TODO reset the task

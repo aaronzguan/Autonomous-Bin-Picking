@@ -141,20 +141,20 @@ if __name__ == "__main__":
     action_mode = ActionMode(ArmActionMode.ABS_JOINT_POSITION)
     # Create grasp controller with initialized environment and task
     grasp_controller = GraspController(action_mode, static_positions=False)
-    num_data = 896
-    base_data = 3105
+    num_data = 2000
+    base_data = 0
     for i in range(num_data):
         # Reset task
         descriptions, obs = grasp_controller.reset()
         # Getting object poses, noisy or not
         objs = grasp_controller.get_objects(add_noise=False)
 
-        home_pose = np.copy(objs['waypoint0'][1])
-        home_pose[0] -= 0.022
+        home_pose = np.copy(objs['waypoint3'][1])
+        # home_pose[0] -= 0.022
         path = grasp_controller.get_path(home_pose)
 
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
 
         rgb = obs.wrist_rgb
 
-        cv2.imwrite('dataset/no_object/wrist_rgb_{}.png'.format(i + base_data), rgb * 255)
+        cv2.imwrite('dataset/small_container/no_object/wrist_rgb_{}.png'.format(i + base_data), cv2.cvtColor(rgb * 255, cv2.COLOR_RGB2BGR))
