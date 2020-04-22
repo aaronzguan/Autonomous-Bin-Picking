@@ -81,13 +81,15 @@ class GraspPlanner(object):
         self.policy_config = self.config["policy"]
         self.policy_config["metric"]["gqcnn_model"] = model_path
 
-    def plan_grasp(self, depth, camera_intr=None, segmask=None):
+    def plan_grasp(self, depth, rgb, camera_intr=None, segmask=None):
         """
         Computes possible grasps.
         Parameters
         ----------
         depth: type `numpy`
             depth image
+        rgb: type `numpy`
+            rgb image
         camera_intr: type `perception.CameraIntrinsics`
             Intrinsic camera object.
         segmask: type `perception.BinaryImage`
@@ -104,7 +106,7 @@ class GraspPlanner(object):
             camera_intr = CameraIntrinsics.load(camera_intr_filename)
 
         depth_im = DepthImage(depth, frame=camera_intr.frame)
-        color_im = ColorImage(np.zeros([depth_im.height, depth_im.width, 3]).astype(np.uint8), frame=camera_intr.frame)
+        color_im = ColorImage(rgb, frame=camera_intr.frame)
 
         valid_px_mask = depth_im.invalid_pixel_mask().inverse()
         if segmask is None:
@@ -138,9 +140,9 @@ class GraspPlanner(object):
         # Get grasping policy
         if "FC" in self.model:
             if self.policy_config["type"] == "fully_conv_suction":
-                grasping_policy = FullyConvolutionalGraspingPolicySuction(self.policy_config)
+                self.grasping_policy = FullyConvolutionalGraspingPolicySuction(self.policy_config)
             elif self.policy_config["type"] == "fully_conv_pj":
-                grasping_policy = FullyConvolutionalGraspingPolicyParallelJaw(self.policy_config)
+                self.grasping_policy = FullyConvolutionalGraspingPolicyParallelJaw(self.policy_config)
             else:
                 raise ValueError("Invalid fully-convolutional policy type: {}".format(self.policy_config["type"]))
         else:
@@ -148,12 +150,11 @@ class GraspPlanner(object):
             if "type" in self.policy_config:
                 policy_type = self.policy_config["type"]
             if policy_type == "ranking":
-                grasping_policy = RobustGraspingPolicy(self.policy_config)
+                self.grasping_policy = RobustGraspingPolicy(self.policy_config)
             elif policy_type == "cem":
-                grasping_policy = CrossEntropyRobustGraspingPolicy(self.policy_config)
+                self.grasping_policy = CrossEntropyRobustGraspingPolicy(self.policy_config)
             else:
                 raise ValueError("Invalid policy type: {}".format(policy_type))
-        return grasping_policy
 
     def execute_policy(self, rgbd_image_state):
         """
@@ -165,18 +166,10 @@ class GraspPlanner(object):
             depth and color image along with camera intrinsics.
         """
         policy_start = time.time()
-        grasping_policy = self._get_grasp_policy()
-        grasping_action = grasping_policy(rgbd_image_state)
+        if not self.grasping_policy:
+            self._get_grasp_policy()
+        grasping_action = self.grasping_policy(rgbd_image_state)
         self.logger.info("Planning took %.3f sec" % (time.time() - policy_start))
-
-        vis.figure(size=(10, 10))
-        vis.imshow(self.rgbd_im.depth,
-                   vmin=self.policy_config["vis"]["vmin"],
-                   vmax=self.policy_config["vis"]["vmax"])
-        vis.grasp(grasping_action.grasp, scale=2.5, show_center=False, show_axis=True)
-        vis.title("Planned grasp at depth {0:.3f}m with Q={1:.3f}".format(
-            grasping_action.grasp.depth, grasping_action.q_value))
-        vis.show()
 
         # Translation of grasping point w.r.t the camera frame
         grasping_translation = np.array([grasping_action.grasp.pose().translation[1],
@@ -184,6 +177,17 @@ class GraspPlanner(object):
                                          grasping_action.grasp.pose().translation[2]]) * -1
         # Angle of grasping point w.r.t the x-axis of camera frame
         angle_wrt_x = grasping_action.grasp.angle
+        angle_degree = angle_wrt_x*180 / np.pi
+        if angle_degree <= -270:
+            angle_degree += 360
+        elif (angle_degree > -270 and angle_degree <= -180) or (angle_degree > -180 and angle_degree <= -90):
+            angle_degree += 180
+        elif (angle_degree > 90 and angle_degree <= 180) or(angle_degree > 180 and angle_degree <= 270):
+            angle_degree -= 180
+        elif (angle_degree > 270 and angle_degree <= 360):
+            angle_degree -= 360
+        
+        angle_wrt_x = angle_degree * np.pi / 180
         # Rotation matrix from world frame to camera frame
         world_to_cam_rotation = np.dot(np.array([[1, 0, 0],
                                                  [0, np.cos(np.pi), -np.sin(np.pi)],
@@ -203,4 +207,13 @@ class GraspPlanner(object):
         grasping_quaternion = np.array([quat_wxyz.x, quat_wxyz.y, quat_wxyz.z, quat_wxyz.w])
 
         grasping_pose = np.hstack((grasping_translation, grasping_quaternion))
+
+        vis.figure(size=(10, 10))
+        vis.imshow(self.rgbd_im.color,
+                   vmin=0,
+                   vmax=255)
+        vis.grasp(grasping_action.grasp, scale=2.5, show_center=False, show_axis=True)
+        vis.title("Planned grasp at depth {0:.3f}m \n".format(grasping_action.grasp.depth)
+                  + 'grasping pose {}'.format(grasping_pose))
+        vis.show()
         return grasping_pose

@@ -11,6 +11,12 @@ from pyrep.const import ConfigurationPathAlgorithms as Algos
 from grasp_planner import GraspPlanner
 from perception import CameraIntrinsics
 
+from object_detector import check_container_empty
+import cv2
+import matplotlib.pyplot as plt
+import time
+
+
 def skew(x):
     return np.array([[0, -x[2], x[1]],
                      [x[2], 0, -x[0]],
@@ -88,7 +94,15 @@ class GraspController:
             self.env._pyrep.step()
             self.task._task.step()
             self.env._scene.step()
-        return self.env._robot.gripper.get_grasped_objects()
+
+        grasped_objects = {}
+        obj_list = ['Shape', 'Shape1', 'Shape3']
+        objs = self.env._scene._active_task.get_base().get_objects_in_tree(exclude_base=True, first_generation_only=False)
+        for obj in objs:
+            if obj.get_name() in obj_list:
+                grasped_objects[obj.get_name()] = self.env._robot.gripper.grasp(obj)
+        return grasped_objects
+        # return self.env._robot.gripper.get_grasped_objects()
 
     def release(self):
         done = False
@@ -118,7 +132,7 @@ class GraspController:
 
 if __name__ == "__main__":
     # Get grasp planner using GQCNN
-    grasp_planner = GraspPlanner(model="GQCNN-4.0-PJ")
+    grasp_planner = GraspPlanner(model="GQCNN-2.0")
     # Set Action Mode, See rlbench/action_modes.py for other action modes
     action_mode = ActionMode(ArmActionMode.ABS_JOINT_POSITION)
     # Create grasp controller with initialized environment and task
@@ -126,22 +140,47 @@ if __name__ == "__main__":
     # Reset task
     descriptions, obs = grasp_controller.reset()
 
+    # The camera intrinsic in RLBench
     camera_intr = CameraIntrinsics(fx=893.738, fy=893.738, cx=516, cy=386, frame='world', height=772, width=1032)
-    camera_to_gripper_translation = [0.03, 0, 0.1]
+    # The translation between camera and gripper
+    camera_to_gripper_translation = [0.022, 0, 0.085]
     # TODO: Change the whole logic into detecting the object using GQCNN
     while True:
         objs = grasp_controller.get_objects(add_noise=True)
-        # go back to home position
-        home_pose = objs['waypoint0'][1]
+        # Go to home position
+        home_pose = np.copy(objs['waypoint0'][1])
+        home_pose[0] -= 0.022
         path = grasp_controller.get_path(home_pose)
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
         # Getting object poses, noisy or not
         # TODO detect the pose using vision and handle the noisy pose
+        # Scale the image and change the type to fit the neural network
+        rgb = np.array(obs.wrist_rgb * 255, dtype='uint8')
+        # Change the image to BGR to fit the neural network
+        # p.s. The network is trained on BGR images
+        wrist_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        # Use network with trained model to check if the large container is empty or not
+        detector_start = time.time()
+        container_is_empty = check_container_empty(model_path='large_container_detector_model.pth', image=wrist_image)
+        plt.figure(figsize=(8, 8))
+        plt.imshow(cv2.cvtColor(wrist_image, cv2.COLOR_BGR2RGB))
+        if container_is_empty:
+            plt.title('The large container is empty? \n Prediction Result: True. Time used: {0:.2f}sec'.format(
+                time.time()-detector_start))
+            plt.show()
+            print('The large container is empty, forward task is finished!')
+            print('Move to the resetting task!')
+            break
+        else:
+            plt.title('The large container is empty? \n Prediction Result: False. Time used: {0:.2f}sec'.format(
+                time.time() - detector_start))
+            plt.show()
 
         # Take depth picture and use GQCNN to predict grasping pose
+        # p.s. Need to scale the depth by 10 to fit GQCNN
         depth = obs.wrist_depth*10
         # Get the grasping pose relative to the current camera position (home position)
-        graspping_pose = grasp_planner.plan_grasp(depth, camera_intr=camera_intr)
+        graspping_pose = grasp_planner.plan_grasp(depth, rgb, camera_intr=camera_intr)
         # Convert the relative grasping position to global grasping position
         graspping_pose[:3] += home_pose[:3]
         # Add extra distance between camera and gripper
@@ -154,6 +193,7 @@ if __name__ == "__main__":
 
         # grasp the object and return a list of grasped objects
         grasped_objects = grasp_controller.grasp()
+        print('Object graspping status:', grasped_objects)
         # TODO get feedback to check if grasp is successfull
 
         # move to home position
