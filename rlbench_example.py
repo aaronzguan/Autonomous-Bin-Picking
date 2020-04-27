@@ -1,6 +1,6 @@
 import numpy as np
 import scipy as sp
-from quaternion import from_rotation_matrix, quaternion
+from quaternion import from_rotation_matrix, quaternion, as_rotation_matrix
 
 from rlbench.environment import Environment
 from rlbench.action_modes import ArmActionMode, ActionMode
@@ -11,7 +11,7 @@ from pyrep.const import ConfigurationPathAlgorithms as Algos
 from grasp_planner import GraspPlanner
 from perception import CameraIntrinsics
 
-from object_detector import large_container_detector
+from object_detector import container_detector
 import cv2
 import matplotlib.pyplot as plt
 import time
@@ -92,8 +92,8 @@ class GraspController:
             # gradually close the gripper
             done_grab_action = self.env._robot.gripper.actuate(0, velocity=0.2)  # 0 is close
             self.env._pyrep.step()
-            self.task._task.step()
-            self.env._scene.step()
+            # self.task._task.step()
+            # self.env._scene.step()
 
         grasped_objects = {}
         obj_list = ['Shape', 'Shape1', 'Shape3']
@@ -109,8 +109,8 @@ class GraspController:
         while not done:
             done = self.env._robot.gripper.actuate(1, velocity=0.2)  # 1 is release
             self.env._pyrep.step()
-            self.task._task.step()
-            self.env._scene.step()
+            # self.task._task.step()
+            # self.env._scene.step()
         self.env._robot.gripper.release()
 
     def execute_path(self, path, open_gripper=True):
@@ -134,7 +134,9 @@ if __name__ == "__main__":
     # Get grasp planner using GQCNN
     grasp_planner = GraspPlanner(model="GQCNN-2.0")
     # Get large container empty detector
-    large_container_detector = large_container_detector(model='large_container_detector_model.pth')
+    large_container_detector = container_detector(model='large_container_detector_model.pth')
+    # Get small container empty detector
+    small_container_detector = container_detector(model='small_container_detector_model.pth')
     # Set Action Mode, See rlbench/action_modes.py for other action modes
     action_mode = ActionMode(ArmActionMode.ABS_JOINT_POSITION)
     # Create grasp controller with initialized environment and task
@@ -145,68 +147,170 @@ if __name__ == "__main__":
     # The camera intrinsic in RLBench
     camera_intr = CameraIntrinsics(fx=893.738, fy=893.738, cx=516, cy=386, frame='world', height=772, width=1032)
     # The translation between camera and gripper
-    camera_to_gripper_translation = [0.022, 0, 0.085]
     # TODO: Change the whole logic into detecting the object using GQCNN
+    object_initial_poses = {}
     while True:
-        objs = grasp_controller.get_objects(add_noise=True)
-        # Go to home position
-        home_pose = np.copy(objs['waypoint0'][1])
-        home_pose[0] -= 0.022
-        path = grasp_controller.get_path(home_pose)
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+        camera_to_gripper_translation = [0.022, 0, 0.095]
+        while True:
+            objs = grasp_controller.get_objects(add_noise=True)
+            # Go to home position
+            home_pose = np.copy(objs['waypoint0'][1])
+            home_pose[0] -= 0.022
+            path = grasp_controller.get_path(home_pose)
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
 
-        # Scale the image and change the type to uint8 to fit the neural network
-        rgb = np.array(obs.wrist_rgb * 255, dtype='uint8')
-        # Change the image to BGR to fit the neural network
-        # p.s. The network is trained on BGR images
-        wrist_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        # Use network with trained model to check if the large container is empty or not
-        detector_start = time.time()
-        container_is_empty = large_container_detector.check_empty(image=wrist_image)
-        plt.figure(figsize=(8, 8))
-        plt.imshow(cv2.cvtColor(wrist_image, cv2.COLOR_BGR2RGB))
-        if container_is_empty:
-            plt.title('The large container is empty? \n Prediction Result: True. Time used: {0:.2f}sec'.format(
-                time.time()-detector_start))
-            plt.show()
-            print('The large container is empty, forward task is finished!')
-            print('Move to the resetting task!')
-            break
-        else:
-            plt.title('The large container is empty? \n Prediction Result: False. Time used: {0:.2f}sec'.format(
-                time.time() - detector_start))
-            plt.show()
+            # Scale the image and change the type to uint8 to fit the neural network
+            rgb = np.array(obs.wrist_rgb * 255, dtype='uint8')
+            # Change the image to BGR to fit the neural network
+            # p.s. The network is trained on BGR images
+            wrist_image = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            # Use network with trained model to check if the large container is empty or not
+            detector_start = time.time()
+            container_is_empty = large_container_detector.check_empty(image=wrist_image)
+            plt.figure(figsize=(8, 8))
+            plt.imshow(cv2.cvtColor(wrist_image, cv2.COLOR_BGR2RGB))
+            if container_is_empty:
+                plt.title('The large container is empty? \n Prediction Result: True. Time used: {0:.2f}sec '
+                          '\n Forward Finished, Start Resetting'.format(time.time()-detector_start))
+                plt.show()
+                break
+            else:
+                plt.title('The large container is empty? \n Prediction Result: False. Time used: {0:.2f}sec '
+                          '\n Continue Grasping'.format(time.time() - detector_start))
+                plt.show()
 
-        # Take depth picture and use GQCNN to predict grasping pose
-        # p.s. Need to scale the depth by 10 to fit GQCNN
-        depth = obs.wrist_depth*10
-        # Get the grasping pose relative to the current camera position (home position)
-        graspping_pose = grasp_planner.plan_grasp(depth, rgb, camera_intr=camera_intr)
-        # Convert the relative grasping position to global grasping position
-        graspping_pose[:3] += home_pose[:3]
-        # Add extra distance between camera and gripper
-        graspping_pose[:3] += camera_to_gripper_translation
-        print(graspping_pose)
-        # Getting the path of reaching the target position
-        path = grasp_controller.get_path(graspping_pose, set_orientation=True)
-        # Execute the path
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+            # Take depth picture and use GQCNN to predict grasping pose
+            # p.s. Need to scale the depth by 10 to fit GQCNN
+            depth = obs.wrist_depth*10
+            # Get the grasping pose relative to the current camera position (home position)
+            graspping_pose = np.copy(grasp_planner.plan_grasp(depth, rgb, camera_intr=camera_intr))
+            # Convert the relative grasping position to global grasping position
+            graspping_pose[:3] += home_pose[:3]
+            # Add extra distance between camera and gripper
+            graspping_pose[:3] += camera_to_gripper_translation
+            # Getting the path of reaching the target position
+            path = grasp_controller.get_path(graspping_pose, set_orientation=True)
+            # Execute the path
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
 
-        # grasp the object and return a list of grasped objects
-        grasped_objects = grasp_controller.grasp()
-        print('Object graspping status:', grasped_objects)
+            # grasp the object and return a list of grasped objects
+            grasped_objects = grasp_controller.grasp()
+            print('Object graspping status:', grasped_objects)
+            for object in grasped_objects:
+                if grasped_objects[object]:
+                    object_initial_poses[object] = graspping_pose
 
-        # move to home position
-        pose = objs['waypoint0'][1]
-        path = grasp_controller.get_path(pose)
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
+                    # move to home position
+                    pose = np.copy(objs['waypoint0'][1])
+                    path = grasp_controller.get_path(pose)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
 
-        # move above small container
-        pose = objs['waypoint3'][1]
-        path = grasp_controller.get_path(pose)
-        obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
+                    # move above small container
+                    rot = np.dot(as_rotation_matrix(quaternion(0, 0, 1, 0)),
+                                 np.array([[np.cos(np.pi / 2), -np.sin(np.pi / 2), 0],
+                                           [np.sin(np.pi / 2), np.cos(np.pi / 2), 0],
+                                           [0, 0, 1]]))
+                    quat_wxyz = from_rotation_matrix(rot)
 
-        # release the object
-        grasp_controller.release()
+                    quat = np.array([quat_wxyz.x, quat_wxyz.y, quat_wxyz.z, quat_wxyz.w])
+                    pose = np.copy(objs['waypoint3'][1])
+                    pose[3:] = quat
+                    path = grasp_controller.get_path(pose, set_orientation=True)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
 
-    # TODO reset the task
+                    pose[2] -= 0.15
+                    path = grasp_controller.get_path(pose, set_orientation=True)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
+                    # release the object
+                    grasp_controller.release()
+
+                    # move above small container
+                    pose = np.copy(objs['waypoint3'][1])
+                    pose[3:] = quat
+                    path = grasp_controller.get_path(pose, set_orientation=True)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+
+                    break
+
+        camera_to_gripper_translation = [-0.013, -0.028, 0.1]
+        # TODO reset the task
+        while True:
+            objs = grasp_controller.get_objects(add_noise=True)
+            # move above small container
+            home_pose = np.copy(objs['waypoint3'][1])
+
+            home_pose[0] -= 0.01
+            home_pose[1] += 0.028
+            home_pose[2] -= 0.13
+
+            rot = np.dot(as_rotation_matrix(quaternion(0, 0, 1, 0)),
+                         np.array([[np.cos(np.pi / 2), -np.sin(np.pi / 2), 0],
+                                   [np.sin(np.pi / 2), np.cos(np.pi / 2), 0],
+                                   [0, 0, 1]]))
+            quat_wxyz = from_rotation_matrix(rot)
+
+            grasping_quaternion = np.array([quat_wxyz.x, quat_wxyz.y, quat_wxyz.z, quat_wxyz.w])
+            home_pose[3:] = grasping_quaternion
+            path = grasp_controller.get_path(home_pose, set_orientation=True)
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+
+            # Get the rgb image and scale it by 255
+            rgb = np.array(obs.wrist_rgb * 255, dtype='uint8')
+            # use vision to detect if the small container is empty or not
+            detector_start = time.time()
+            container_is_empty = small_container_detector.check_empty(image=rgb)
+            plt.figure(figsize=(8, 8))
+            plt.imshow(rgb)
+            if container_is_empty:
+                plt.title('The small container is empty? \n Prediction Result: True. Time used: {0:.2f}sec '
+                          '\n Resetting Finished'.format(time.time() - detector_start))
+                plt.show()
+                break
+            else:
+                plt.title('The small container is empty? \n Prediction Result: False. Time used: {0:.2f}sec '
+                          '\n Continue Grasping'.format(time.time() - detector_start))
+                plt.show()
+            # Take depth picture and use GQCNN to predict grasping pose
+            # p.s. Need to scale the depth by 10 to fit GQCNN
+            depth = obs.wrist_depth * 10
+            # Get the grasping pose relative to the current camera position (home position)
+            graspping_pose = np.copy(grasp_planner.plan_grasp(depth, rgb, resetting=True, camera_intr=camera_intr))
+            # Convert the relative grasping position to global grasping position
+            graspping_pose[:3] += home_pose[:3]
+            # Add extra distance between camera and gripper
+            graspping_pose[:3] += camera_to_gripper_translation
+            graspping_pose[3:] = grasping_quaternion
+
+            path = grasp_controller.get_path(graspping_pose, set_orientation=True)
+            obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+            # grasp the object and return a list of grasped objects
+            grasped_objects = grasp_controller.grasp()
+            print('Object graspping status:', grasped_objects)
+            target_pose = None
+            for object in grasped_objects:
+                if grasped_objects[object]:
+                    target_pose = object_initial_poses[object]
+
+                    # move above small container
+                    pose = np.copy(objs['waypoint3'][1])
+                    path = grasp_controller.get_path(pose)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
+
+                    # move above large container
+                    pose = np.copy(objs['waypoint0'][1])
+                    path = grasp_controller.get_path(pose)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
+
+                    # move to reset position
+                    path = grasp_controller.get_path(target_pose)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=False)
+
+                    # release the object
+                    grasp_controller.release()
+
+                    # move above large container
+                    pose = np.copy(objs['waypoint0'][1])
+                    path = grasp_controller.get_path(pose)
+                    obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
+
+                    break

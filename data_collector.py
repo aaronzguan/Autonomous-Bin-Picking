@@ -1,6 +1,6 @@
 import numpy as np
 import scipy as sp
-from quaternion import from_rotation_matrix, quaternion
+from quaternion import from_rotation_matrix, quaternion, as_rotation_matrix
 
 from rlbench.environment import Environment
 from rlbench.action_modes import ArmActionMode, ActionMode
@@ -140,9 +140,9 @@ if __name__ == "__main__":
     # Set Action Mode, See rlbench/action_modes.py for other action modes
     action_mode = ActionMode(ArmActionMode.ABS_JOINT_POSITION)
     # Create grasp controller with initialized environment and task
-    grasp_controller = GraspController(action_mode, static_positions=False)
-    num_data = 2000
-    base_data = 0
+    grasp_controller = GraspController(action_mode, static_positions=True)
+    base_data = 800
+    num_data = 1000 - base_data
     for i in range(num_data):
         # Reset task
         descriptions, obs = grasp_controller.reset()
@@ -150,11 +150,22 @@ if __name__ == "__main__":
         objs = grasp_controller.get_objects(add_noise=False)
 
         home_pose = np.copy(objs['waypoint3'][1])
-        # home_pose[0] -= 0.022
-        path = grasp_controller.get_path(home_pose)
 
+        home_pose[0] -= 0.01
+        home_pose[1] += 0.028
+        home_pose[2] -= 0.13
+
+        rot = np.dot(as_rotation_matrix(quaternion(0, 0, 1, 0)),
+                     np.array([[np.cos(np.pi / 2), -np.sin(np.pi / 2), 0],
+                               [np.sin(np.pi / 2), np.cos(np.pi / 2), 0],
+                               [0, 0, 1]]))
+        quat_wxyz = from_rotation_matrix(rot)
+
+        grasping_quaternion = np.array([quat_wxyz.x, quat_wxyz.y, quat_wxyz.z, quat_wxyz.w])
+        home_pose[3:] = grasping_quaternion
+        path = grasp_controller.get_path(home_pose, set_orientation=True)
         obs, reward, terminate = grasp_controller.execute_path(path, open_gripper=True)
 
         rgb = obs.wrist_rgb
 
-        cv2.imwrite('dataset/small_container/no_object/wrist_rgb_{}.png'.format(i + base_data), cv2.cvtColor(rgb * 255, cv2.COLOR_RGB2BGR))
+        cv2.imwrite('dataset/small_container/contain_object/wrist_rgb_{}.png'.format(i + base_data), cv2.cvtColor(rgb * 255, cv2.COLOR_RGB2BGR))

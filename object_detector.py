@@ -19,8 +19,10 @@ class object_dataset(torch.utils.data.Dataset):
         super(object_dataset, self).__init__()
         root_path = '/home/aaronguan/Desktop/16662-RobotAutonomy/Project_RLBench/EmptyContainer/dataset/'
         # root_path = '/home/ubuntu/autonomy/dataset/'
-        positive_img_path = glob(root_path + 'contain_object/*')
-        negative_img_path = glob(root_path + 'no_object/*')
+        positive_img_path = glob(root_path + 'small_container/contain_object/*') + glob(
+            root_path + 'small_container/contain_object_2/*')
+        negative_img_path = glob(root_path + 'small_container/no_object/*') + glob(
+            root_path + 'small_container/no_object_2/*')[:1300]
         self.image_path = positive_img_path + negative_img_path
         self.label = [1] * len(positive_img_path) + [0] * len(negative_img_path)
 
@@ -52,16 +54,16 @@ class object_detector_cnn(nn.Module):
         return output
 
 
-class large_container_detector():
+class container_detector():
     def __init__(self, model):
-        device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         self.model = object_detector_cnn()
         self.model.load_state_dict(torch.load(model))
-        self.model.to(device)
+        self.model.to(self.device)
         self.model.eval()
 
     def check_empty(self, image):
-        output = self.model(ToTensor()(image).unsqueeze(0))
+        output = self.model(ToTensor()(image).unsqueeze(0).to(self.device))
         _, label_pred = torch.max(output, 1)
         label_pred = label_pred.detach().numpy()[0]
         return not label_pred
@@ -76,10 +78,10 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(dataset=train_dataset, batch_size=32, shuffle=True)
 
     criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-5)
-    scheduler = MultiStepLR(optimizer, milestones=[10, 20, 30], gamma=0.1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-5)
+    scheduler = MultiStepLR(optimizer, milestones=[5, 10, 15, 20], gamma=0.1)
     best_acc = 0
-    for epoch in range(40):
+    for epoch in range(25):
         model.to(device)
         model.train()
         running_batch = 0

@@ -81,7 +81,7 @@ class GraspPlanner(object):
         self.policy_config = self.config["policy"]
         self.policy_config["metric"]["gqcnn_model"] = model_path
 
-    def plan_grasp(self, depth, rgb, camera_intr=None, segmask=None):
+    def plan_grasp(self, depth, rgb, resetting=False, camera_intr=None, segmask=None):
         """
         Computes possible grasps.
         Parameters
@@ -127,7 +127,7 @@ class GraspPlanner(object):
             self.policy_config["metric"]["fully_conv_gqcnn_config"]["im_height"] = depth_im.shape[0]
             self.policy_config["metric"]["fully_conv_gqcnn_config"]["im_width"] = depth_im.shape[1]
 
-        return self.execute_policy(state)
+        return self.execute_policy(state, resetting)
 
     def _get_grasp_policy(self):
         """
@@ -156,7 +156,7 @@ class GraspPlanner(object):
             else:
                 raise ValueError("Invalid policy type: {}".format(policy_type))
 
-    def execute_policy(self, rgbd_image_state):
+    def execute_policy(self, rgbd_image_state, resetting=False):
         """
         Executes a grasping policy on an `RgbdImageState`.
         Parameters
@@ -168,40 +168,69 @@ class GraspPlanner(object):
         policy_start = time.time()
         if not self.grasping_policy:
             self._get_grasp_policy()
-        grasping_action = self.grasping_policy(rgbd_image_state)
+        try:
+            grasping_action = self.grasping_policy(rgbd_image_state)
+        except:
+            vis.figure(size=(10, 10))
+            vis.imshow(self.rgbd_im.color,
+                       vmin=0,
+                       vmax=255)
+            vis.title("No Valid Grasp, Task Finished")
+            vis.show()
+
         self.logger.info("Planning took %.3f sec" % (time.time() - policy_start))
 
-        # Translation of grasping point w.r.t the camera frame
-        grasping_translation = np.array([grasping_action.grasp.pose().translation[1],
-                                         grasping_action.grasp.pose().translation[0],
-                                         grasping_action.grasp.pose().translation[2]]) * -1
         # Angle of grasping point w.r.t the x-axis of camera frame
         angle_wrt_x = grasping_action.grasp.angle
-        angle_degree = angle_wrt_x*180 / np.pi
+        angle_degree = angle_wrt_x * 180 / np.pi
         if angle_degree <= -270:
             angle_degree += 360
         elif (angle_degree > -270 and angle_degree <= -180) or (angle_degree > -180 and angle_degree <= -90):
             angle_degree += 180
-        elif (angle_degree > 90 and angle_degree <= 180) or(angle_degree > 180 and angle_degree <= 270):
+        elif (angle_degree > 90 and angle_degree <= 180) or (angle_degree > 180 and angle_degree <= 270):
             angle_degree -= 180
         elif (angle_degree > 270 and angle_degree <= 360):
             angle_degree -= 360
-        
         angle_wrt_x = angle_degree * np.pi / 180
-        # Rotation matrix from world frame to camera frame
-        world_to_cam_rotation = np.dot(np.array([[1, 0, 0],
-                                                 [0, np.cos(np.pi), -np.sin(np.pi)],
-                                                 [0, np.sin(np.pi), np.cos(np.pi)]]),
-                                       np.array([[np.cos(np.pi / 2), -np.sin(np.pi / 2), 0],
-                                                 [np.sin(np.pi / 2), np.cos(np.pi / 2), 0],
-                                                 [0, 0, 1]]))
-        # Rotation matrix from camera frame to gripper frame
-        cam_to_gripper_rotation = np.dot(np.array([[np.cos(angle_wrt_x), -np.sin(angle_wrt_x), 0],
-                                                   [np.sin(angle_wrt_x), np.cos(angle_wrt_x), 0],
-                                                   [0, 0, 1]]),
-                                         np.array([[np.cos(np.pi / 2), -np.sin(np.pi / 2), 0],
-                                                   [np.sin(np.pi / 2), np.cos(np.pi / 2), 0],
-                                                   [0, 0, 1]]))
+
+        if resetting:
+            angle_wrt_x += np.pi/2
+            # Translation of grasping point w.r.t the camera frame
+            grasping_translation = np.array([grasping_action.grasp.pose().translation[0] * -1,
+                                             grasping_action.grasp.pose().translation[1],
+                                             grasping_action.grasp.pose().translation[2] * -1])
+            # Rotation matrix from world frame to camera frame
+            world_to_cam_rotation = np.dot(np.array([[1, 0, 0],
+                                                     [0, np.cos(np.pi), -np.sin(np.pi)],
+                                                     [0, np.sin(np.pi), np.cos(np.pi)]]),
+                                           np.array([[np.cos(np.pi), -np.sin(np.pi), 0],
+                                                     [np.sin(np.pi), np.cos(np.pi), 0],
+                                                     [0, 0, 1]]))
+            # Rotation matrix from camera frame to gripper frame
+            cam_to_gripper_rotation = np.array([[np.cos(angle_wrt_x), -np.sin(angle_wrt_x), 0],
+                                                [np.sin(angle_wrt_x), np.cos(angle_wrt_x), 0],
+                                                [0, 0, 1]])
+        else:
+            # Translation of grasping point w.r.t the camera frame
+            grasping_translation = np.array([grasping_action.grasp.pose().translation[1],
+                                             grasping_action.grasp.pose().translation[0],
+                                             grasping_action.grasp.pose().translation[2]]) * -1
+
+            # Rotation matrix from world frame to camera frame
+            world_to_cam_rotation = np.dot(np.array([[1, 0, 0],
+                                                     [0, np.cos(np.pi), -np.sin(np.pi)],
+                                                     [0, np.sin(np.pi), np.cos(np.pi)]]),
+                                           np.array([[np.cos(np.pi / 2), -np.sin(np.pi / 2), 0],
+                                                     [np.sin(np.pi / 2), np.cos(np.pi / 2), 0],
+                                                     [0, 0, 1]]))
+            # Rotation matrix from camera frame to gripper frame
+            cam_to_gripper_rotation = np.dot(np.array([[np.cos(angle_wrt_x), -np.sin(angle_wrt_x), 0],
+                                                       [np.sin(angle_wrt_x), np.cos(angle_wrt_x), 0],
+                                                       [0, 0, 1]]),
+                                             np.array([[np.cos(np.pi / 2), -np.sin(np.pi / 2), 0],
+                                                       [np.sin(np.pi / 2), np.cos(np.pi / 2), 0],
+                                                       [0, 0, 1]]))
+
         world_to_gripper_rotation = np.dot(world_to_cam_rotation, cam_to_gripper_rotation)
         quat_wxyz = from_rotation_matrix(world_to_gripper_rotation)
         grasping_quaternion = np.array([quat_wxyz.x, quat_wxyz.y, quat_wxyz.z, quat_wxyz.w])
