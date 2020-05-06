@@ -1,4 +1,4 @@
-# Robot Autonomy Spring 2020 Simulation Project
+# RLBench Simulation for Autonomous Empty Container
 
 ## Description
 The goal for this project is to move objects between containers. Specifically, the forward task
