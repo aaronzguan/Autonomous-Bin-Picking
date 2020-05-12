@@ -1,7 +1,7 @@
-# RLBench Simulation for Autonomous Empty Container
+# RLBench Simulation for Autonomous Bin Picking
 
 ## Description
-The goal for this project is to move objects between containers. Specifically, the forward task
+The goal for this project is to move objects between containers for bin picking. Specifically, the forward task
 is to move objects from the middle container to containers on the side, and the reset task is
 to move objects back from the side containers to the middle one. The robot should switch to
 the other task when the current container is empty.
